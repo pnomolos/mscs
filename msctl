@@ -1613,17 +1613,12 @@ start() {
   fi
   # Start the server.
   # On Linux, tail --pid=$$ exits when the wrapping shell dies.
-  # On macOS, tail lacks --pid; we background tail, pipe via a FIFO,
-  # and clean up the tail process when the server exits.
+  # On macOS, tail lacks --pid; use plain pipe and kill $$ on exit.
+  # macOS nohup fails without a terminal, so use sh with redirections instead.
   if [ "$IS_MACOS" -eq 1 ]; then
-    nohup sh -c "
-      FIFO=\"$WORLD_DIR/console.fifo\"
-      rm -f \"\$FIFO\"; mkfifo \"\$FIFO\"
-      tail -f \"$WORLD_DIR/console.in\" >\"\$FIFO\" &
-      TAIL_PID=\$!
-      $SERVER_COMMAND mscs-world=$1 <\"\$FIFO\" >\"$WORLD_DIR/console.out\" 2>&1
-      kill \$TAIL_PID 2>/dev/null; rm -f \"\$FIFO\"
-    " >/dev/null 2>&1 &
+    sh -c "trap '' HUP; tail -f $WORLD_DIR/console.in | {
+      $SERVER_COMMAND mscs-world=$1 > $WORLD_DIR/console.out 2>&1; kill \$$;
+    }" </dev/null >/dev/null 2>&1 &
   else
     nohup sh -c "tail -f --pid=\$$ $WORLD_DIR/console.in | {
       $SERVER_COMMAND mscs-world=$1 > $WORLD_DIR/console.out 2>&1; kill \$$;
@@ -2105,7 +2100,7 @@ queryStart() {
   # Wait until the query port is open before creating the query files
   # and establishing the tail process.
   if [ "$IS_MACOS" -eq 1 ]; then
-    nohup sh -c "
+    sh -c "trap '' HUP
       while ! echo | $SOCAT - UDP-CONNECT:$SERVER_IP:$QUERY_PORT >/dev/null 2>&1; do
         sleep 0.1
       done;
@@ -2116,7 +2111,7 @@ queryStart() {
       # Monitor the server process; clean up when it exits.
       while kill -0 $SERVER_PID 2>/dev/null; do sleep 1; done
       kill \$! 2>/dev/null
-    " >/dev/null 2>&1 &
+    " </dev/null >/dev/null 2>&1 &
   else
     nohup sh -c "
       while ! echo | $SOCAT - UDP-CONNECT:$SERVER_IP:$QUERY_PORT >/dev/null 2>&1; do
