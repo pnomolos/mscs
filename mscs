@@ -19,8 +19,12 @@ PROG=$(basename $0)
 USER_NAME="minecraft"
 
 # Add Homebrew PATH on macOS so tools are found when running as the minecraft user.
+# Also set SSL CA bundle so Perl LWP can verify HTTPS in piped/sudo contexts.
 if [ "$(uname -s)" = "Darwin" ]; then
   export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+  if [ -f /etc/ssl/cert.pem ]; then
+    export PERL_LWP_SSL_CA_FILE=/etc/ssl/cert.pem
+  fi
 fi
 
 # Setup the default installation location.
@@ -38,5 +42,5 @@ if [ "$USER_NAME" = "$(whoami)" ]; then
   msctl -p "$PROG" -l "$LOCATION" -c "$MSCS_DEFAULTS" "$@"
 else
   cd "$LOCATION" 2>/dev/null || cd /
-  sudo PATH="$PATH" -u "$USER_NAME" -H msctl -p "$PROG" -l "$LOCATION" -c "$MSCS_DEFAULTS" "$@"
+  sudo PATH="$PATH" PERL_LWP_SSL_CA_FILE="${PERL_LWP_SSL_CA_FILE:-}" -u "$USER_NAME" -H msctl -p "$PROG" -l "$LOCATION" -c "$MSCS_DEFAULTS" "$@"
 fi

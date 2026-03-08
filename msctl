@@ -47,6 +47,14 @@ if [ -z "$IS_MACOS" ]; then
   esac
 fi
 
+# On macOS, ensure Perl LWP can verify SSL certificates in all contexts
+# (piped subshells, sudo, etc.). The system CA bundle exists at /etc/ssl/cert.pem.
+if [ "$IS_MACOS" -eq 1 ] && [ -z "$PERL_LWP_SSL_CA_FILE" ]; then
+  if [ -f /etc/ssl/cert.pem ]; then
+    export PERL_LWP_SSL_CA_FILE=/etc/ssl/cert.pem
+  fi
+fi
+
 # Platform Abstraction Helpers
 # ---------------------------------------------------------------------------
 # These wrap platform-specific behavior so they can be tested and overridden.
