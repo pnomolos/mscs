@@ -37,6 +37,71 @@
 # ---------------------------------------------------------------------------
 PROG=$(basename $0)
 
+# Platform Detection
+# ---------------------------------------------------------------------------
+# IS_MACOS can be preset (e.g. by tests) to override auto-detection.
+if [ -z "$IS_MACOS" ]; then
+  case "$(uname -s)" in
+    Darwin) IS_MACOS=1 ;;
+    *)      IS_MACOS=0 ;;
+  esac
+fi
+
+# Platform Abstraction Helpers
+# ---------------------------------------------------------------------------
+# These wrap platform-specific behavior so they can be tested and overridden.
+
+# Convert a datetime string to epoch seconds.
+# @param 1 A datetime string (ISO 8601 or similar).
+# @return Epoch seconds on stdout.
+date_to_epoch() {
+  if [ "$IS_MACOS" -eq 1 ]; then
+    date -jf "%Y-%m-%dT%H:%M:%S%z" "$1" +%s 2>/dev/null ||
+    date -jf "%Y-%m-%dT%H:%M:%S" "$1" +%s 2>/dev/null ||
+    date -jf "%Y-%m-%d %H:%M:%S %z" "$1" +%s
+  else
+    date --date="$1" +%s
+  fi
+}
+
+# Convert epoch seconds to an RFC 3339-like timestamp.
+# @param 1 Epoch seconds.
+# @return Timestamp on stdout.
+epoch_to_datetime() {
+  if [ "$IS_MACOS" -eq 1 ]; then
+    date -r "$1" +%Y-%m-%dT%H:%M:%S%z
+  else
+    date --date=@$1 --rfc-3339=seconds | tr ' ' T
+  fi
+}
+
+# Compute a SHA-1 hash for a file.
+# @param 1 The file path.
+# @return The hex digest on stdout.
+sha1_hash() {
+  if [ "$IS_MACOS" -eq 1 ]; then
+    shasum -a 1 "$1" | cut -d ' ' -f1
+  else
+    sha1sum "$1" | cut -d ' ' -f1
+  fi
+}
+
+# tail -f with automatic exit when a monitored PID dies.
+# For interactive use (foreground).  Backgrounds tail, traps for cleanup.
+# @param 1 PID to monitor.
+# @param 2 File to follow.
+tail_follow_pid() {
+  if [ "$IS_MACOS" -eq 1 ]; then
+    tail -n0 -f "$2" &
+    local TAIL_PID=$!
+    # Poll for the monitored process; exit when it dies.
+    while kill -0 "$1" 2>/dev/null; do sleep 1; done
+    kill $TAIL_PID 2>/dev/null
+  else
+    tail -n0 -f --pid="$1" "$2"
+  fi
+}
+
 # Required Software
 # ---------------------------------------------------------------------------
 # Detect its presence and location for later.
@@ -338,7 +403,7 @@ getJavaPID() {
   local PID MCUSER
   MCUSER=$(whoami)
   PID=$(
-    ps -a -U $MCUSER -o pid,comm,args -ww | $PERL -sne '
+    ps -A -U $MCUSER -o pid,comm,args -ww | $PERL -sne '
       if ($_ =~ /^\s*(\d+)\s+java.+mscs-world=\Q$world\E$/) { print $1; }
     ' -- -world="$1"
   )
@@ -354,7 +419,7 @@ getJavaPID() {
 getJavaMemory() {
   local PID
   PID=$(getJavaPID "$1")
-  ps --no-headers -p $PID -o rss
+  ps -p $PID -o rss=
 }
 
 # ---------------------------------------------------------------------------
@@ -442,8 +507,8 @@ listContains() {
 # ---------------------------------------------------------------------------
 compareTime() {
   local T1 T2
-  T1=$(date --date="$1" +%s)
-  T2=$(date --date="$2" +%s)
+  T1=$(date_to_epoch "$1")
+  T2=$(date_to_epoch "$2")
   printf $(($T1 < $T2 ? -1 : $T1 > $T2 ? 1 : 0))
 }
 
@@ -1280,15 +1345,16 @@ rotateLog() {
 # @param 1 The world server generating the log to watch.
 # ---------------------------------------------------------------------------
 watchLog() {
-  local WORLD_DIR
+  local WORLD_DIR PID
   WORLD_DIR="$WORLDS_LOCATION/$1"
+  PID=$(getJavaPID "$1")
   # Make sure that the latest.log file exists.
   if [ -e "$WORLD_DIR/logs/latest.log" ]; then
     # Watch the log file of worlds running Minecraft 1.7 +.
-    tail -n0 -f --pid=$(getJavaPID "$1") $WORLD_DIR/logs/latest.log
+    tail_follow_pid "$PID" "$WORLD_DIR/logs/latest.log"
   elif [ -e "$WORLD_DIR/server.log" ]; then
     # Watch the log file of worlds running older Minecraft servers.
-    tail -n0 -f --pid=$(getJavaPID "$1") $WORLD_DIR/server.log
+    tail_follow_pid "$PID" "$WORLD_DIR/server.log"
   fi
 }
 
@@ -1312,14 +1378,20 @@ syncMirrorImage() {
 # @param 1 The world server to connect to.
 # ---------------------------------------------------------------------------
 serverConsole() {
-  local LINE WORLD_DIR
+  local LINE WORLD_DIR TAIL_PID
   # Make sure that the world's directory exists.
   WORLD_DIR="$WORLDS_LOCATION/$1"
   # Follow the console output buffer file.
-  tail -f --pid=$$ $WORLD_DIR/console.out &
+  if [ "$IS_MACOS" -eq 1 ]; then
+    tail -f "$WORLD_DIR/console.out" &
+    TAIL_PID=$!
+    trap "kill $TAIL_PID 2>/dev/null; exit" EXIT INT TERM
+  else
+    tail -f --pid=$$ "$WORLD_DIR/console.out" &
+  fi
   # Copy user input to the console input buffer file.
   while read LINE; do
-    echo "$LINE" >>$WORLD_DIR/console.in
+    echo "$LINE" >>"$WORLD_DIR/console.in"
   done
 }
 
@@ -1532,9 +1604,23 @@ start() {
     exit 1
   fi
   # Start the server.
-  nohup sh -c "tail -f --pid=\$$ $WORLD_DIR/console.in | {
-    $SERVER_COMMAND mscs-world=$1 > $WORLD_DIR/console.out 2>&1; kill \$$;
-  }" >/dev/null 2>&1 &
+  # On Linux, tail --pid=$$ exits when the wrapping shell dies.
+  # On macOS, tail lacks --pid; we background tail, pipe via a FIFO,
+  # and clean up the tail process when the server exits.
+  if [ "$IS_MACOS" -eq 1 ]; then
+    nohup sh -c "
+      FIFO=\"$WORLD_DIR/console.fifo\"
+      rm -f \"\$FIFO\"; mkfifo \"\$FIFO\"
+      tail -f \"$WORLD_DIR/console.in\" >\"\$FIFO\" &
+      TAIL_PID=\$!
+      $SERVER_COMMAND mscs-world=$1 <\"\$FIFO\" >\"$WORLD_DIR/console.out\" 2>&1
+      kill \$TAIL_PID 2>/dev/null; rm -f \"\$FIFO\"
+    " >/dev/null 2>&1 &
+  else
+    nohup sh -c "tail -f --pid=\$$ $WORLD_DIR/console.in | {
+      $SERVER_COMMAND mscs-world=$1 > $WORLD_DIR/console.out 2>&1; kill \$$;
+    }" >/dev/null 2>&1 &
+  fi
   # Verify the server is running.
   if [ $? -ne 0 ]; then
     printf "Error starting the server.\n"
@@ -1725,7 +1811,7 @@ worldBackupList() {
     # Grab the list of backups for the world server.
     $RDIFF_BACKUP --parsable-output -l $BACKUP_LOCATION/$1 |
       while read SEC TYPE; do
-        date --date=\@$SEC --rfc-3339=seconds | tr ' ' T
+        epoch_to_datetime $SEC
       done
   fi
 }
@@ -1802,7 +1888,7 @@ updateClientSoftware() {
       printf "Error retrieving the sha1 for the Minecraft client software.\n"
       exit 1
     fi
-    SHA1_FILE=$(sha1sum $CLIENT_LOCATION/$CLIENT_JAR | cut -d ' ' -f1)
+    SHA1_FILE=$(sha1_hash "$CLIENT_LOCATION/$CLIENT_JAR")
     if [ $SHA1 != "$SHA1_FILE" ]; then
       printf "Error verifying the sha1 for the Minecraft client software.\n"
       exit 1
@@ -1853,7 +1939,7 @@ updateServerSoftware() {
       printf "Error retrieving the sha1 for the Minecraft server software.\n"
       exit 1
     fi
-    SHA1_FILE=$(sha1sum $SERVER_LOCATION/$SERVER_JAR | cut -d ' ' -f1)
+    SHA1_FILE=$(sha1_hash "$SERVER_LOCATION/$SERVER_JAR")
     if [ $SHA1 != "$SHA1_FILE" ]; then
       printf "Error verifying the sha1 for the Minecraft server software.\n"
     fi
@@ -2010,15 +2096,30 @@ queryStart() {
   # server is piped into the query.out file.
   # Wait until the query port is open before creating the query files
   # and establishing the tail process.
-  nohup sh -c "
-    while ! echo | $SOCAT - UDP-CONNECT:$SERVER_IP:$QUERY_PORT >/dev/null 2>&1; do
-      sleep 0.1
-    done;
-    printf '' >\"$WORLD_DIR/query.in\"
-    printf '' >\"$WORLD_DIR/query.out\"
-    tail -f --pid=$SERVER_PID \"$WORLD_DIR/query.in\" |
-    $SOCAT - UDP:$SERVER_IP:$QUERY_PORT > \"$WORLD_DIR/query.out\"
-  " >/dev/null 2>&1 &
+  if [ "$IS_MACOS" -eq 1 ]; then
+    nohup sh -c "
+      while ! echo | $SOCAT - UDP-CONNECT:$SERVER_IP:$QUERY_PORT >/dev/null 2>&1; do
+        sleep 0.1
+      done;
+      printf '' >\"$WORLD_DIR/query.in\"
+      printf '' >\"$WORLD_DIR/query.out\"
+      tail -f \"$WORLD_DIR/query.in\" |
+      $SOCAT - UDP:$SERVER_IP:$QUERY_PORT > \"$WORLD_DIR/query.out\" &
+      # Monitor the server process; clean up when it exits.
+      while kill -0 $SERVER_PID 2>/dev/null; do sleep 1; done
+      kill \$! 2>/dev/null
+    " >/dev/null 2>&1 &
+  else
+    nohup sh -c "
+      while ! echo | $SOCAT - UDP-CONNECT:$SERVER_IP:$QUERY_PORT >/dev/null 2>&1; do
+        sleep 0.1
+      done;
+      printf '' >\"$WORLD_DIR/query.in\"
+      printf '' >\"$WORLD_DIR/query.out\"
+      tail -f --pid=$SERVER_PID \"$WORLD_DIR/query.in\" |
+      $SOCAT - UDP:$SERVER_IP:$QUERY_PORT > \"$WORLD_DIR/query.out\"
+    " >/dev/null 2>&1 &
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -2315,77 +2416,93 @@ worldStatusJSON() {
 # Begin.
 # ---------------------------------------------------------------------------
 
+# Suggest installation commands appropriate for the platform.
+#
+# @param 1 The apt-get package name (Linux).
+# @param 2 The brew package name or cpanm command (macOS).
+# ---------------------------------------------------------------------------
+suggest_install() {
+  echo "Try installing this with:"
+  if [ "$IS_MACOS" -eq 1 ]; then
+    echo "  $2"
+  else
+    echo "  sudo apt-get install $1"
+  fi
+}
+
 # Make sure that Java, Perl, libjson-perl, libwww-perl, Python, Wget,
 # Rdiff-backup, Rsync, Socat and flock are installed.
+# Set MSCTL_SKIP_DEPS=1 to skip (e.g. when sourcing for tests).
 # ---------------------------------------------------------------------------
-if [ ! -e "$JAVA" ]; then
-  echo "ERROR: Java not found!"
-  echo "Try installing this with:"
-  echo "sudo apt-get install default-jre"
-  exit 1
-fi
-if [ ! -e "$PERL" ]; then
-  echo "ERROR: Perl not found!"
-  echo "Try installing this with:"
-  echo "sudo apt-get install perl"
-  exit 1
-fi
-$PERL -e 'use JSON;' >/dev/null 2>&1
-if [ $? -ne 0 ]; then
-  echo "ERROR: libjson-perl not found!"
-  echo "Try installing this with:"
-  echo "sudo apt-get install libjson-perl"
-  exit 1
-fi
-$PERL -e 'use LWP::Simple;' >/dev/null 2>&1
-if [ $? -ne 0 ]; then
-  echo "ERROR: libwww-perl not found!"
-  echo "Try installing this with:"
-  echo "sudo apt-get install libwww-perl"
-  exit 1
-fi
-$PERL -e 'use LWP::Protocol::https;' >/dev/null 2>&1
-if [ $? -ne 0 ]; then
-  echo "ERROR: liblwp-protocol-https-perl not found!"
-  echo "Try installing this with:"
-  echo "sudo apt-get install liblwp-protocol-https-perl"
-  exit 1
-fi
-if [ ! -e "$PYTHON" ]; then
-  echo "ERROR: Python not found!"
-  echo "Try installing this with:"
-  echo "sudo apt-get install python3"
-  exit 1
-fi
-if [ ! -e "$WGET" ]; then
-  echo "ERROR: GNU Wget not found!"
-  echo "Try installing this with:"
-  echo "sudo apt-get install wget"
-  exit 1
-fi
-if [ ! -e "$RDIFF_BACKUP" ]; then
-  echo "ERROR: rdiff-backup not found!"
-  echo "Try installing this with:"
-  echo "sudo apt-get install rdiff-backup"
-  exit 1
-fi
-if [ ! -e "$RSYNC" ]; then
-  echo "ERROR: rsync not found!"
-  echo "Try installing this with:"
-  echo "sudo apt-get install rsync"
-  exit 1
-fi
-if [ ! -e "$SOCAT" ]; then
-  echo "ERROR: socat not found!"
-  echo "Try installing this with:"
-  echo "sudo apt-get install socat"
-  exit 1
-fi
-if [ ! -e "$FLOCK" ]; then
-  echo "ERROR: flock not found!"
-  echo "Try installing this with:"
-  echo "sudo apt-get install util-linux"
-  exit 1
+if [ "$MSCTL_SKIP_DEPS" != "1" ]; then
+  if [ ! -e "$JAVA" ]; then
+    echo "ERROR: Java not found!"
+    suggest_install "default-jre" "brew install openjdk"
+    exit 1
+  fi
+  if [ ! -e "$PERL" ]; then
+    echo "ERROR: Perl not found!"
+    suggest_install "perl" "brew install perl"
+    exit 1
+  fi
+  $PERL -e 'use JSON;' >/dev/null 2>&1
+  if [ $? -ne 0 ]; then
+    echo "ERROR: libjson-perl not found!"
+    suggest_install "libjson-perl" "cpanm JSON"
+    exit 1
+  fi
+  $PERL -e 'use LWP::Simple;' >/dev/null 2>&1
+  if [ $? -ne 0 ]; then
+    echo "ERROR: libwww-perl not found!"
+    suggest_install "libwww-perl" "cpanm LWP::Simple"
+    exit 1
+  fi
+  $PERL -e 'use LWP::Protocol::https;' >/dev/null 2>&1
+  if [ $? -ne 0 ]; then
+    echo "ERROR: liblwp-protocol-https-perl not found!"
+    suggest_install "liblwp-protocol-https-perl" "cpanm LWP::Protocol::https"
+    exit 1
+  fi
+  if [ ! -e "$PYTHON" ]; then
+    echo "ERROR: Python not found!"
+    suggest_install "python3" "brew install python3"
+    exit 1
+  fi
+  if [ ! -e "$WGET" ]; then
+    echo "ERROR: GNU Wget not found!"
+    suggest_install "wget" "brew install wget"
+    exit 1
+  fi
+  if [ ! -e "$RDIFF_BACKUP" ]; then
+    echo "ERROR: rdiff-backup not found!"
+    suggest_install "rdiff-backup" "brew install rdiff-backup"
+    exit 1
+  fi
+  if [ ! -e "$RSYNC" ]; then
+    echo "ERROR: rsync not found!"
+    if [ "$IS_MACOS" -eq 1 ]; then
+      echo "rsync normally ships with macOS. Check your PATH or reinstall Xcode command line tools."
+    else
+      suggest_install "rsync" ""
+    fi
+    exit 1
+  fi
+  if [ ! -e "$SOCAT" ]; then
+    echo "ERROR: socat not found!"
+    suggest_install "socat" "brew install socat"
+    exit 1
+  fi
+  if [ ! -e "$FLOCK" ]; then
+    echo "ERROR: flock not found!"
+    if [ "$IS_MACOS" -eq 1 ]; then
+      echo "Try installing this with:"
+      echo "  brew install util-linux"
+      echo "You may also need: brew link --force util-linux"
+    else
+      suggest_install "util-linux" ""
+    fi
+    exit 1
+  fi
 fi
 
 # Parse command-line options
@@ -2546,7 +2663,12 @@ fi
 # Server Location
 # ---------------------------------------------------------------------------
 # The default location of server software and data.
-LOCATION=$(getDefaultsValue 'mscs-location' $HOME'/mscs')
+if [ "$IS_MACOS" -eq 1 ]; then
+  DEFAULT_LOCATION='/usr/local/var/mscs'
+else
+  DEFAULT_LOCATION=$HOME'/mscs'
+fi
+LOCATION=$(getDefaultsValue 'mscs-location' "$DEFAULT_LOCATION")
 # Override with command-line location option.
 [ -n "$LOCATION_CL" ] && LOCATION="$LOCATION_CL"
 
@@ -2680,7 +2802,12 @@ ENABLE_MIRROR=$(getDefaultsValue 'mscs-enable-mirror' '0')
 # The location to store the mirror image.
 #
 # NOTE: This is usually a ramdisk, e.g. /dev/shm on Debian/Ubuntu.
-MIRROR_PATH=$(getDefaultsValue 'mscs-mirror-path' '/dev/shm/mscs')
+if [ "$IS_MACOS" -eq 1 ]; then
+  DEFAULT_MIRROR_PATH='/tmp/mscs'
+else
+  DEFAULT_MIRROR_PATH='/dev/shm/mscs'
+fi
+MIRROR_PATH=$(getDefaultsValue 'mscs-mirror-path' "$DEFAULT_MIRROR_PATH")
 
 # Minecraft Overviewer Mapping Software Options
 # ---------------------------------------------------------------------------

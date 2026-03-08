@@ -7,6 +7,8 @@ terr () {
 }
 
 # get variable values and functions for testing
+MSCTL_SKIP_DEPS=1
+export MSCTL_SKIP_DEPS
 . ./msctl
 
 # override some vars from msctl with values that allow testing
