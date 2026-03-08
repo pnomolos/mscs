@@ -110,6 +110,19 @@ tail_follow_pid() {
   fi
 }
 
+# Portable timeout: run a command with a time limit.
+# macOS lacks GNU timeout. Uses perl as a fallback.
+# @param 1 Timeout in seconds.
+# @param ... Command to run.
+portable_timeout() {
+  local SECS="$1"; shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$SECS" "$@"
+  else
+    $PERL -e 'alarm shift @ARGV; exec @ARGV' "$SECS" "$@"
+  fi
+}
+
 # Required Software
 # ---------------------------------------------------------------------------
 # Detect its presence and location for later.
@@ -2153,7 +2166,7 @@ querySendPacket() {
       print map { pack ("C", hex($_)) } ($packet =~ /(..)/g);
     ' -- -packet="$PACKET" >>"$WORLD_DIR/query.in"
     # Give the Query server a moment to respond.
-    timeout 1 sh -c "while [ ! -s '$WORLD_DIR/query.out' ]; do :; done"
+    portable_timeout 1 sh -c "while [ ! -s '$WORLD_DIR/query.out' ]; do :; done"
     # Unpack the response packet from the query.out buffer file. There are a
     # variable amount of null bytes at the start of the response packet, so
     # find the start of the response by searching for the packet type and ID.
