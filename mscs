@@ -37,5 +37,6 @@ MSCS_DEFAULTS="$LOCATION/mscs.defaults"
 if [ "$USER_NAME" = "$(whoami)" ]; then
   msctl -p "$PROG" -l "$LOCATION" -c "$MSCS_DEFAULTS" "$@"
 else
+  cd "$LOCATION" 2>/dev/null || cd /
   sudo PATH="$PATH" -u "$USER_NAME" -H msctl -p "$PROG" -l "$LOCATION" -c "$MSCS_DEFAULTS" "$@"
 fi
