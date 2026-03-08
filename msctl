@@ -411,8 +411,8 @@ getJavaPID() {
   local PID MCUSER
   MCUSER=$(whoami)
   PID=$(
-    ps -A -U $MCUSER -o pid,comm,args -ww | $PERL -sne '
-      if ($_ =~ /^\s*(\d+)\s+java.+mscs-world=\Q$world\E$/) { print $1; }
+    ps -U $MCUSER -o pid,comm,args -ww | $PERL -sne '
+      if ($_ =~ /^\s*(\d+)\s+\S*java\s.+mscs-world=\Q$world\E$/) { print $1; }
     ' -- -world="$1"
   )
   printf "%d\n" $PID
