@@ -83,3 +83,25 @@ test -s ~/mscs.conf && \
 
 test -s ~/.config/mscs/mscs.conf && \
   convert_defaults ~/.config/mscs/mscs.conf ~/.config/mscs/mscs.defaults
+
+# On macOS: migrate old config from the data dir to the Homebrew-standard etc dir.
+if [ "$(uname -s)" = "Darwin" ]; then
+  if [ -d /opt/homebrew ]; then
+    HOMEBREW_PREFIX=/opt/homebrew
+  else
+    HOMEBREW_PREFIX=/usr/local
+  fi
+  NEW_MACOS_DEFAULTS="$HOMEBREW_PREFIX/etc/mscs/mscs.defaults"
+  if [ ! -f "$NEW_MACOS_DEFAULTS" ]; then
+    mkdir -p "$HOMEBREW_PREFIX/etc/mscs"
+    # Check both the current prefix and /usr/local (covers Apple Silicon installs
+    # that were originally set up with the old hardcoded /usr/local path).
+    for old_prefix in "$HOMEBREW_PREFIX" /usr/local; do
+      OLD_MACOS_DEFAULTS="$old_prefix/var/mscs/mscs.defaults"
+      if [ -s "$OLD_MACOS_DEFAULTS" ]; then
+        convert_defaults "$OLD_MACOS_DEFAULTS" "$NEW_MACOS_DEFAULTS"
+        break
+      fi
+    done
+  fi
+fi

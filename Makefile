@@ -1,16 +1,19 @@
 UNAME_S := $(shell uname -s)
 MSCS_USER := minecraft
 
-MSCTL := /usr/local/bin/msctl
-MSCS := /usr/local/bin/mscs
-
 ifeq ($(UNAME_S),Darwin)
-  MSCS_HOME := /usr/local/var/mscs
-  MSCS_COMPLETION := /usr/local/share/bash-completion/completions/mscs
+  HOMEBREW_PREFIX := $(shell [ -d /opt/homebrew ] && echo /opt/homebrew || echo /usr/local)
+  MSCTL := $(HOMEBREW_PREFIX)/bin/msctl
+  MSCS := $(HOMEBREW_PREFIX)/bin/mscs
+  MSCS_HOME := $(HOMEBREW_PREFIX)/var/mscs
+  MSCS_CONF_DIR := $(HOMEBREW_PREFIX)/etc/mscs
+  MSCS_COMPLETION := $(HOMEBREW_PREFIX)/share/bash-completion/completions/mscs
   LAUNCHD_PLIST := /Library/LaunchDaemons/com.mscs.all.plist
-  LAUNCHD_WRAPPER := /usr/local/bin/mscs-launchd-wrapper.sh
+  LAUNCHD_WRAPPER := $(HOMEBREW_PREFIX)/bin/mscs-launchd-wrapper.sh
   MSCS_LOG_DIR := /var/log/mscs
 else
+  MSCTL := /usr/local/bin/msctl
+  MSCS := /usr/local/bin/mscs
   MSCS_HOME := /opt/mscs
   MSCS_INIT_D := /etc/init.d/mscs
   MSCS_SERVICE := /etc/systemd/system/mscs.service
@@ -60,6 +63,7 @@ update:
 	install -m 0755 mscs $(MSCS)
 	install -m 0755 mscs-launchd-wrapper.sh $(LAUNCHD_WRAPPER)
 	install -m 0644 com.mscs.all.plist $(LAUNCHD_PLIST)
+	mkdir -p $(MSCS_CONF_DIR)
 	mkdir -p $(dir $(MSCS_COMPLETION))
 	install -m 0644 mscs.completion $(MSCS_COMPLETION)
 	@for script in $(UPDATE_D); do \
@@ -71,6 +75,7 @@ clean:
 		launchctl unload $(LAUNCHD_PLIST) 2>/dev/null; true
 	rm -f $(LAUNCHD_PLIST) $(LAUNCHD_WRAPPER)
 	rm -f $(MSCTL) $(MSCS) $(MSCS_COMPLETION)
+	-rmdir $(MSCS_CONF_DIR) 2>/dev/null; true
 
 else
 

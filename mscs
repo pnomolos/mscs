@@ -29,13 +29,21 @@ fi
 
 # Setup the default installation location.
 if [ "$(uname -s)" = "Darwin" ]; then
-  LOCATION="/usr/local/var/mscs"
+  # Detect Homebrew prefix: Apple Silicon uses /opt/homebrew, Intel uses /usr/local.
+  if [ -d /opt/homebrew ]; then
+    HOMEBREW_PREFIX=/opt/homebrew
+  else
+    HOMEBREW_PREFIX=/usr/local
+  fi
+  LOCATION="$HOMEBREW_PREFIX/var/mscs"
+  MSCS_CONF_DIR="$HOMEBREW_PREFIX/etc/mscs"
 else
   LOCATION="/opt/mscs"
+  MSCS_CONF_DIR="$LOCATION"
 fi
 
 # Setup the default location of the mscs.defaults file.
-MSCS_DEFAULTS="$LOCATION/mscs.defaults"
+MSCS_DEFAULTS="$MSCS_CONF_DIR/mscs.defaults"
 
 # Run the msctl script.
 if [ "$USER_NAME" = "$(whoami)" ]; then
