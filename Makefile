@@ -35,6 +35,8 @@ UPDATE_D := $(wildcard update.d/*)
 ifeq ($(UNAME_S),Darwin)
 
 install: adduser update
+	mkdir -p $(MSCS_HOME)
+	chown $(MSCS_USER) $(MSCS_HOME)
 	mkdir -p $(MSCS_LOG_DIR)
 	chown $(MSCS_USER) $(MSCS_LOG_DIR)
 	launchctl bootstrap system $(LAUNCHD_PLIST) 2>/dev/null || \
@@ -64,6 +66,7 @@ update:
 	install -m 0755 mscs-launchd-wrapper.sh $(LAUNCHD_WRAPPER)
 	install -m 0644 com.mscs.all.plist $(LAUNCHD_PLIST)
 	mkdir -p $(MSCS_CONF_DIR)
+	chown $(MSCS_USER) $(MSCS_CONF_DIR)
 	mkdir -p $(dir $(MSCS_COMPLETION))
 	install -m 0644 mscs.completion $(MSCS_COMPLETION)
 	@for script in $(UPDATE_D); do \

@@ -2581,8 +2581,15 @@ else
   MSCS_DEFAULTS="$HOME/mscs.defaults"
 fi
 # Generate the example `mscs.defaults` if it is missing or empty.
+# The write may fail if the config directory is not writable by the current
+# user (e.g. when running as the minecraft user and the config lives in a
+# root-owned directory like /opt/homebrew/etc/mscs).  In that case, fall back
+# to a temporary file so that getDefaultsValue() still has something to read.
 if [ ! -s "$MSCS_DEFAULTS" ]; then
-  mscs_defaults >$MSCS_DEFAULTS
+  if ! mscs_defaults >"$MSCS_DEFAULTS" 2>/dev/null; then
+    MSCS_DEFAULTS=$(mktemp "${TMPDIR:-/tmp}/mscs.defaults.XXXXXX")
+    mscs_defaults >"$MSCS_DEFAULTS"
+  fi
 fi
 # Default values in the script can be overridden by adding certain key/value
 # pairs to one of the mscs.defaults files mentioned above. Default values in
