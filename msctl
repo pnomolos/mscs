@@ -611,7 +611,7 @@ importWorld() {
   cp -R "$1"/. "$WORLDS_LOCATION/$2"
   chown -R "$(id -un):$(id -gn)" "$WORLDS_LOCATION/$2"
   NAME=$(getServerPropertiesValue "$2" 'level-name')
-  if [ -d "$WORLDS_LOCATION/$2/$NAME" ]; then
+  if [ "$NAME" != "$2" ] && [ -d "$WORLDS_LOCATION/$2/$NAME" ]; then
     mv "$WORLDS_LOCATION/$2/$NAME" "$WORLDS_LOCATION/$2/$2"
   fi
   createWorld "$2" "$3" "$4"
