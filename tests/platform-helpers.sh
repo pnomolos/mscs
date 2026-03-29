@@ -76,7 +76,12 @@ IS_MACOS="$ORIG_IS_MACOS"
 # --- DEFAULT_LOCATION ---
 # Verify the location default is platform-aware.
 if [ "$IS_MACOS" -eq 1 ]; then
-  if [ "$DEFAULT_LOCATION" != "/usr/local/var/mscs" ]; then
-    terr "DEFAULT_LOCATION on macOS: got '$DEFAULT_LOCATION' want '/usr/local/var/mscs'"
+  if [ -d /opt/homebrew ]; then
+    EXPECTED_LOCATION="/opt/homebrew/var/mscs"
+  else
+    EXPECTED_LOCATION="/usr/local/var/mscs"
+  fi
+  if [ "$DEFAULT_LOCATION" != "$EXPECTED_LOCATION" ]; then
+    terr "DEFAULT_LOCATION on macOS: got '$DEFAULT_LOCATION' want '$EXPECTED_LOCATION'"
   fi
 fi

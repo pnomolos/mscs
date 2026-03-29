@@ -56,8 +56,8 @@ else
     import|copy|cp)
       SRC_DIR="$2"
       if [ -n "$SRC_DIR" ] && [ -d "$SRC_DIR" ]; then
-        STAGING=$(mktemp -d "${TMPDIR:-/tmp}/mscs-import.XXXXXX")
-        cp -R "$SRC_DIR"/* "$STAGING"/
+        STAGING=$(mktemp -d /tmp/mscs-import.XXXXXX)
+        cp -R "$SRC_DIR"/. "$STAGING"/
         chmod -R a+rX "$STAGING"
         CMD="$1"; shift 2
         set -- "$CMD" "$STAGING" "$@"

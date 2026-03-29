@@ -608,11 +608,11 @@ enableWorld() {
 importWorld() {
   local NAME
   mkdir -p "$WORLDS_LOCATION/$2"
-  cp -R $1/* $WORLDS_LOCATION/$2
-  chown $(id -un):$(id -gn) -R $WORLDS_LOCATION/$2
-  NAME=$(getServerPropertiesValue $2 'level-name')
-  if [ -d $WORLDS_LOCATION/$2/$NAME ]; then
-    mv $WORLDS_LOCATION/$2/$NAME $WORLDS_LOCATION/$2/$2
+  cp -R "$1"/. "$WORLDS_LOCATION/$2"
+  chown -R "$(id -un):$(id -gn)" "$WORLDS_LOCATION/$2"
+  NAME=$(getServerPropertiesValue "$2" 'level-name')
+  if [ -d "$WORLDS_LOCATION/$2/$NAME" ]; then
+    mv "$WORLDS_LOCATION/$2/$NAME" "$WORLDS_LOCATION/$2/$2"
   fi
   createWorld "$2" "$3" "$4"
 }
@@ -2587,7 +2587,7 @@ fi
 # to a temporary file so that getDefaultsValue() still has something to read.
 if [ ! -s "$MSCS_DEFAULTS" ]; then
   if ! mscs_defaults >"$MSCS_DEFAULTS" 2>/dev/null; then
-    MSCS_DEFAULTS=$(mktemp "${TMPDIR:-/tmp}/mscs.defaults.XXXXXX")
+    MSCS_DEFAULTS=$(mktemp /tmp/mscs.defaults.XXXXXX)
     mscs_defaults >"$MSCS_DEFAULTS"
   fi
 fi
@@ -2688,7 +2688,11 @@ fi
 # ---------------------------------------------------------------------------
 # The default location of server software and data.
 if [ "$IS_MACOS" -eq 1 ]; then
-  DEFAULT_LOCATION='/usr/local/var/mscs'
+  if [ -d /opt/homebrew ]; then
+    DEFAULT_LOCATION='/opt/homebrew/var/mscs'
+  else
+    DEFAULT_LOCATION='/usr/local/var/mscs'
+  fi
 else
   DEFAULT_LOCATION=$HOME'/mscs'
 fi
