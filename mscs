@@ -49,12 +49,12 @@ MSCS_DEFAULTS="$MSCS_CONF_DIR/mscs.defaults"
 if [ "$USER_NAME" = "$(whoami)" ]; then
   msctl -p "$PROG" -l "$LOCATION" -c "$MSCS_DEFAULTS" "$@"
 else
-  cd "$LOCATION" 2>/dev/null || cd /
   # For import/copy/cp the source directory may not be readable by the
   # minecraft user.  Stage it in a temporary directory that is.
+  # Resolve the path before cd changes the working directory.
   case "$1" in
     import|copy|cp)
-      SRC_DIR="$2"
+      SRC_DIR=$(cd "$2" 2>/dev/null && pwd)
       if [ -n "$SRC_DIR" ] && [ -d "$SRC_DIR" ]; then
         STAGING=$(mktemp -d /tmp/mscs-import.XXXXXX)
         cp -R "$SRC_DIR"/. "$STAGING"/
@@ -65,5 +65,6 @@ else
       fi
       ;;
   esac
+  cd "$LOCATION" 2>/dev/null || cd /
   sudo PATH="$PATH" PERL_LWP_SSL_CA_FILE="${PERL_LWP_SSL_CA_FILE:-}" -u "$USER_NAME" -H msctl -p "$PROG" -l "$LOCATION" -c "$MSCS_DEFAULTS" "$@"
 fi
