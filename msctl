@@ -1695,10 +1695,17 @@ stop() {
   # Tell the server to stop.
   sendCommand $1 "stop"
   sendCommand $1 "end"
-  # Wait for the server to shut down.
-  while serverRunning $1; do
+  # Wait for the server to shut down (up to 5 minutes).
+  local STOP_WAIT=0
+  while serverRunning $1 && [ $STOP_WAIT -le 300 ]; do
+    STOP_WAIT=$(($STOP_WAIT + 1))
     sleep 1
   done
+  if serverRunning $1; then
+    printf "Warning: world %s did not stop within 5 minutes, forcing shutdown.\n" "$1"
+    forceStop $1
+    return
+  fi
   # Synchronize the mirror image of the world prior to closing, if required.
   if true_value $ENABLE_MIRROR && [ -L "$WORLDS_LOCATION/$1/$1" ] && [ -d "$MIRROR_PATH/$1" ]; then
     syncMirrorImage $1
@@ -1741,10 +1748,27 @@ forceStop() {
     WAIT=$(($WAIT + 1))
     sleep 1
   done
-  # Kill the process id of the world server.
-  kill -9 $(getJavaPID "$1") >/dev/null 2>&1
-  # Properly clean up.
-  stop $1
+  # Kill the process id of the world server if still running.
+  local FPID
+  FPID=$(getJavaPID "$1")
+  if [ "$FPID" -gt 0 ] 2>/dev/null; then
+    kill -9 "$FPID" >/dev/null 2>&1
+  fi
+  # Wait for the process to actually exit after SIGKILL.
+  local KWAIT=0
+  while serverRunning $1 && [ $KWAIT -le 10 ]; do
+    KWAIT=$(($KWAIT + 1))
+    sleep 1
+  done
+  # Clean up mirror if applicable.
+  if true_value $ENABLE_MIRROR && [ -L "$WORLDS_LOCATION/$1/$1" ] && [ -d "$MIRROR_PATH/$1" ]; then
+    syncMirrorImage $1
+    rm -f "$WORLDS_LOCATION/$1/$1"
+    rm -Rf "$MIRROR_PATH/$1"
+    mv "$WORLDS_LOCATION/$1/$1-original" "$WORLDS_LOCATION/$1/$1"
+  fi
+  # Remove the PID file for the world server.
+  rm -f "$WORLDS_LOCATION/$1.pid"
 }
 
 # ---------------------------------------------------------------------------
