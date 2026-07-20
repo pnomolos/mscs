@@ -8,7 +8,7 @@
 
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/local/bin/mscs-launchd-wrapper.sh</string>
+    <string>@LAUNCHD_WRAPPER@</string>
   </array>
 
   <key>UserName</key>
