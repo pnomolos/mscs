@@ -806,6 +806,54 @@ getEULAValue() {
 }
 
 # ---------------------------------------------------------------------------
+# Ensure the Minecraft EULA has been accepted before starting a world.
+#
+# The Minecraft server writes eula.txt with eula=false on its first run and
+# exits immediately.  Without this pre-flight check the server would launch,
+# fast-exit, and fail with a confusing "couldn't retrieve the server's process
+# ID" error instead of telling the user what is actually wrong.
+#
+# @param 1 The world server of interest.
+# @return 0 if the EULA is accepted, 1 (with an actionable message) otherwise.
+# ---------------------------------------------------------------------------
+requireEULA() {
+  local EULA EULA_FILE
+  EULA=$(getEULAValue "$1")
+  if true_value "$EULA"; then
+    return 0
+  fi
+  EULA_FILE="$WORLDS_LOCATION/$1/eula.txt"
+  # On a first-ever start the server has not created eula.txt yet; create it
+  # (as eula=false) so the path we point the user at actually exists to edit.
+  if [ ! -e "$EULA_FILE" ]; then
+    printf "eula=false\n" >"$EULA_FILE" 2>/dev/null
+  fi
+  printf "\nError: the Minecraft EULA has not been accepted for world '%s'.\n" "$1"
+  printf "The server cannot start until you accept Mojang's End User License Agreement.\n"
+  printf "Review it at https://aka.ms/MinecraftEULA, then set eula=true in:\n"
+  printf "  %s\n" "$EULA_FILE"
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# Print the tail of a world's console.out to help diagnose a failed start.
+#
+# Many first-start failures (unaccepted EULA, port already in use, wrong Java
+# version, missing jar) cause the server to exit before its process ID can be
+# found; echoing the last lines of its output surfaces the real reason.
+#
+# @param 1 The world server of interest.
+# ---------------------------------------------------------------------------
+printServerOutputTail() {
+  local OUT_FILE
+  OUT_FILE="$WORLDS_LOCATION/$1/console.out"
+  if [ -s "$OUT_FILE" ]; then
+    printf "Last server output (%s):\n" "$OUT_FILE"
+    tail -n 15 "$OUT_FILE"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Get the value of a key in a mscs.properties file.
 #
 # @param 1 The world server of interest.
@@ -1545,7 +1593,7 @@ startServerMonitor() {
 # @param 1 The world server to start.
 # ---------------------------------------------------------------------------
 start() {
-  local EULA PID SERVER_COMMAND WORLD_DIR
+  local PID SERVER_COMMAND WORLD_DIR
   WORLD_DIR="$WORLDS_LOCATION/$1"
 
   # Pre-start Hook script execution
@@ -1572,12 +1620,10 @@ start() {
   if [ ! -e "$WORLD_DIR/$1" ] && [ ! -L "$WORLD_DIR/$1" ]; then
     mkdir -p "$WORLD_DIR/$1"
   fi
-  # Make sure the EULA has been set to true.
-  EULA=$(getEULAValue "$1")
-  if ! true_value "$EULA"; then
-    printf "\nWarning, the EULA has not been accepted for world %s.\n" "$1"
-    printf "To accept the EULA, modify %s/eula.txt file.\n" "$WORLD_DIR"
-  fi
+  # Refuse to start until the EULA has been accepted.  Without this the server
+  # would launch, immediately exit, and fail below with a confusing
+  # "couldn't retrieve the server's process ID" error.
+  requireEULA "$1" || exit 1
   # Rotate the world's log files.
   rotateLog "$1"
   # Make a mirror image of the world directory if requested.
@@ -1650,6 +1696,7 @@ start() {
   PID=$(getJavaPID "$1")
   if [ $PID -eq 0 ]; then
     printf "Error starting the server: couldn't retrieve the server's process ID.\n"
+    printServerOutputTail "$1"
     exit 1
   fi
   # Start the Query handler if enabled.
