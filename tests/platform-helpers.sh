@@ -85,3 +85,36 @@ if [ "$IS_MACOS" -eq 1 ]; then
     terr "DEFAULT_LOCATION on macOS: got '$DEFAULT_LOCATION' want '$EXPECTED_LOCATION'"
   fi
 fi
+
+# --- epoch_to_datetime across a daylight saving boundary ---
+# BSD date resolves %z against the current time, not the time being
+# formatted, so both sides of a transition must be checked. Both timestamps
+# have to survive the round-trip through date_to_epoch.
+for e in 1704067200 1720000000; do
+  got_dt=$(epoch_to_datetime "$e")
+  got_rt=$(date_to_epoch "$got_dt")
+  if [ "$got_rt" != "$e" ]; then
+    terr "epoch_to_datetime round-trip failed for $e: gave '$got_dt' -> '$got_rt'"
+  fi
+  # rdiff-backup only accepts a W3C datetime, whose UTC offset carries a
+  # colon; it rejects the +hhmm form outright.
+  if ! printf "%s" "$got_dt" | grep -qE '[+-][0-9][0-9]:[0-9][0-9]$'; then
+    terr "epoch_to_datetime for $e lacks a W3C UTC offset: '$got_dt'"
+  fi
+done
+
+# --- date_to_epoch offset formats ---
+# The version manifest uses +00:00, our own timestamps use +hh:mm, and Z
+# turns up in ISO 8601 elsewhere. All must be honored rather than silently
+# read as local time.
+for case in \
+  "2021-11-30T09:16:29+00:00|1638263789" \
+  "2021-11-30T09:16:29Z|1638263789" \
+  "2021-11-30T09:16:29+0000|1638263789" \
+  "2021-11-30T01:16:29-08:00|1638263789"
+do
+  got=$(date_to_epoch "${case%%|*}")
+  if [ "$got" != "${case#*|}" ]; then
+    terr "date_to_epoch '${case%%|*}': got '$got' want '${case#*|}'"
+  fi
+done
