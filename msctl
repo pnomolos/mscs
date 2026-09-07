@@ -1838,13 +1838,120 @@ forceStop() {
 }
 
 # ---------------------------------------------------------------------------
+# Detect which rdiff-backup command line interface is available.
+#
+# rdiff-backup 2.1 introduced an action based interface
+# (rdiff-backup [global options] ACTION [sub-options] LOCATIONS...). The
+# legacy option based interface still works in the 2.2 series, but every
+# invocation writes deprecation warnings to stderr and it is slated for
+# removal.
+#
+# Sets RDIFF_BACKUP_CLI to either "new" or "legacy", and
+# RDIFF_BACKUP_GLOBAL_OPTIONS to the global options to pass to the new
+# interface. Requesting API version 201 keeps rdiff-backup from talking to
+# its server side over the deprecated interface, which is the source of the
+# second warning. It is only requested for the 2.x series; the API versions
+# accepted by a later major release are unknown, so let it pick its own.
+#
+# Both are cached, so this must not be called from a subshell.
+# ---------------------------------------------------------------------------
+rdiffBackupDetect() {
+  local VERSION
+  if [ -n "$RDIFF_BACKUP_CLI" ]; then
+    return
+  fi
+  # Parse the version as MAJOR * 100 + MINOR, e.g. 2.2.6 becomes 202.
+  VERSION=$($RDIFF_BACKUP --version 2>/dev/null |
+    $PERL -ne 'if (/(\d+)\.(\d+)/) { print $1 * 100 + $2; exit }')
+  # Fall back to the legacy interface if the version could not be determined.
+  [ -z "$VERSION" ] && VERSION=0
+  RDIFF_BACKUP_GLOBAL_OPTIONS=
+  if [ $VERSION -ge 300 ]; then
+    RDIFF_BACKUP_CLI="new"
+  elif [ $VERSION -ge 201 ]; then
+    RDIFF_BACKUP_CLI="new"
+    RDIFF_BACKUP_GLOBAL_OPTIONS="--api-version 201"
+  else
+    RDIFF_BACKUP_CLI="legacy"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Decide whether an rdiff-backup exit code means the run failed.
+#
+# rdiff-backup 2.1 turned the exit code into a bit field: 1 and 4 report
+# errors, 2 and 8 only report warnings. A cleanup that finds nothing old
+# enough to remove exits with 2, which is a normal outcome and not a failure.
+# The older releases only ever exit 0 or 1, so the same test holds for them.
+#
+# @param 1 The exit code of an rdiff-backup run.
+# @return A 0 if the run failed, a 1 otherwise.
+# ---------------------------------------------------------------------------
+rdiffBackupFailed() {
+  [ $(($1 & 5)) -ne 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# Remove the increments older than the given age from a backup repository.
+#
+# @param 1 The backup repository.
+# @param 2 The age, in the form accepted by rdiff-backup, e.g. 30D.
+# ---------------------------------------------------------------------------
+rdiffBackupRemoveOlderThan() {
+  rdiffBackupDetect
+  if [ "$RDIFF_BACKUP_CLI" = "new" ]; then
+    $RDIFF_BACKUP $RDIFF_BACKUP_GLOBAL_OPTIONS --force \
+      remove increments --older-than "$2" "$1"
+  else
+    $RDIFF_BACKUP --remove-older-than "$2" --force "$1"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# List the increments held in a backup repository.
+#
+# @param 1 The backup repository.
+# @return One epoch timestamp per line, oldest first.
+# ---------------------------------------------------------------------------
+rdiffBackupListIncrements() {
+  rdiffBackupDetect
+  if [ "$RDIFF_BACKUP_CLI" = "new" ]; then
+    # The parsable output of the action based interface is YAML, one mapping
+    # per increment with base, time and type keys.
+    $RDIFF_BACKUP $RDIFF_BACKUP_GLOBAL_OPTIONS --parsable-output \
+      list increments "$1" |
+      $PERL -ne 'print "$1\n" while /\btime:\s*(\d+)/g'
+  else
+    # The parsable output of the legacy interface is "timestamp type".
+    $RDIFF_BACKUP --parsable-output -l "$1" |
+      $PERL -ne 'print "$1\n" if /^(\d+)\s/'
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Restore a backup repository at a given time into a target directory.
+#
+# @param 1 The backup repository.
+# @param 2 The datetime to restore.
+# @param 3 The directory to restore into.
+# ---------------------------------------------------------------------------
+rdiffBackupRestore() {
+  rdiffBackupDetect
+  if [ "$RDIFF_BACKUP_CLI" = "new" ]; then
+    $RDIFF_BACKUP $RDIFF_BACKUP_GLOBAL_OPTIONS restore --at "$2" "$1" "$3"
+  else
+    $RDIFF_BACKUP -r "$2" "$1" "$3"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Backup the world server.
 #
 # @param 1 The world server to backup.
 # @return A 0 if backup successful, a 1 otherwise
 # ---------------------------------------------------------------------------
 worldBackup() {
-  local EXCLUDE_OPTION
+  local BACKUP_COMMAND EXCLUDE_OPTION
   # Make sure that the backup location exists.
   if ! mkdir -p "$BACKUP_LOCATION"; then
     echo "Error creating backup dir $BACKUP_LOCATION"
@@ -1880,8 +1987,15 @@ worldBackup() {
     EXCLUDE_OPTION="$EXCLUDE_OPTION --exclude $WORLDS_LOCATION/$1/$1"
   fi
   # Create the backup.
-  if ! $RDIFF_BACKUP -v5 --print-statistics $EXCLUDE_OPTION "$WORLDS_LOCATION/$1" "$BACKUP_LOCATION/$1" >>"$BACKUP_LOG"; then
-    echo "Error doing backup of world $1"
+  rdiffBackupDetect
+  if [ "$RDIFF_BACKUP_CLI" = "new" ]; then
+    BACKUP_COMMAND="$RDIFF_BACKUP $RDIFF_BACKUP_GLOBAL_OPTIONS -v5 backup --print-statistics"
+  else
+    BACKUP_COMMAND="$RDIFF_BACKUP -v5 --print-statistics"
+  fi
+  $BACKUP_COMMAND $EXCLUDE_OPTION "$WORLDS_LOCATION/$1" "$BACKUP_LOCATION/$1" >>"$BACKUP_LOG" 2>&1
+  if rdiffBackupFailed $?; then
+    echo "Error doing backup of world $1, see $BACKUP_LOG"
     # Return a false value (failure).
     return 1
   fi
@@ -1897,8 +2011,9 @@ worldBackup() {
 worldBackupCleanup() {
   # Cleanup old backups.
   if [ $BACKUP_DURATION -gt 0 ]; then
-    if ! $RDIFF_BACKUP --remove-older-than ${BACKUP_DURATION}D --force "$BACKUP_LOCATION/$1" >>"$BACKUP_LOG"; then
-      echo "Error cleaning old backups of world $1"
+    rdiffBackupRemoveOlderThan "$BACKUP_LOCATION/$1" "${BACKUP_DURATION}D" >>"$BACKUP_LOG" 2>&1
+    if rdiffBackupFailed $?; then
+      echo "Error cleaning old backups of world $1, see $BACKUP_LOG"
       # Return a false value (failure).
       return 1
     fi
@@ -1913,11 +2028,11 @@ worldBackupCleanup() {
 # @param 1 The world server of interest.
 # ---------------------------------------------------------------------------
 worldBackupList() {
-  local SEC TYPE
+  local SEC
   if [ -d $BACKUP_LOCATION/$1 ]; then
     # Grab the list of backups for the world server.
-    $RDIFF_BACKUP --parsable-output -l $BACKUP_LOCATION/$1 |
-      while read SEC TYPE; do
+    rdiffBackupListIncrements "$BACKUP_LOCATION/$1" |
+      while read SEC; do
         epoch_to_datetime $SEC
       done
   fi
@@ -1936,7 +2051,8 @@ worldBackupRestore() {
   TARGET_TMP="${TARGET}_bktmp"
   rm -rf "$TARGET_TMP"
   if [ -d $BACKUP_LOCATION/$1 ]; then
-    if $RDIFF_BACKUP -r $2 "$BACKUP_LOCATION/$1" "$TARGET_TMP"; then
+    rdiffBackupRestore "$BACKUP_LOCATION/$1" "$2" "$TARGET_TMP"
+    if ! rdiffBackupFailed $?; then
       rm -r "$TARGET"
       mv "$TARGET_TMP" "$TARGET"
     else
